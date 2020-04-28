@@ -1,0 +1,52 @@
+#!/bin/bash
+
+dbport=3306
+dbuser=pad
+dbhost=localhost
+dbname=pad
+rootpath=/srv/pad
+
+cat /etc/issue.net | grep 18.04 >/dev/null && (curl -sL https://deb.nodesource.com/setup_10.x | sudo -E bash -)
+
+apt install -y nodejs git mysql-server jq
+dbpasswd=$(< /dev/urandom tr -dc _A-Z-a-z-0-9 | head -c${1:-32};echo;)
+adminpassword=$(< /dev/urandom tr -dc _A-Z-a-z-0-9 | head -c${1:-16};echo;)
+cat <<EOF | mysql
+create database $dbname;
+create user '$dbuser'@'$dbhost' identified by '$dbpasswd';
+grant CREATE,ALTER,SELECT,INSERT,UPDATE,DELETE on $dbname.* to '$dbuser'@'$dbhost';
+EOF
+
+useradd pad
+mkdir $rootpath
+chown pad.pad $rootpath
+usermod -d $rootpath -s /bin/bash pad
+su pad -c 'cd ~;git clone --branch master https://github.com/ether/etherpad-lite.git'
+su pad -c '~/etherpad-lite/bin/installDeps.sh'
+
+cat ~pad/etherpad-lite/settings.json.template | sed 's|/\*|\n&|g;s|*/|&\n|g' | sed '/\/\*/,/*\//d' | sed 's|//.*$||g' |jq --arg dbpassword "$dbpassword" --arg dbuser "$dbuser" --arg dbhost "$dbhost" --arg dbport $dbport --arg adminpassword "$adminpassword" '.dbType="mysql" | .dbSettings={user:$dbuser,host:$dbhost,password:$dbpassword,port:$dbport|tonumber,database:"pad",charset:"utf8mb4"} | .users={admin:{password:$adminpassword,is_admin:true}}' > ~pad/etherpad-lite/settings.json
+
+
+cat <<\EOF > /etc/systemd/system/pad.service
+[Unit]
+Description=Etherpad-lite, the collaborative editor.
+After=syslog.target network.target
+
+[Service]
+Type=simple
+User=pad
+Group=pad
+WorkingDirectory=/srv/pad/etherpad-lite
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/nodejs /srv/pad/etherpad-lite/node_modules/ep_etherpad-lite/node/server.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable pad
+systemctl start pad
+
+echo "admin password : $adminpassword"
+
